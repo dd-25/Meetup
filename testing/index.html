@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Mediasoup Test Client</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script src="https://unpkg.com/mediasoup-client@3.6.38/dist/mediasoup-client.min.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+    }
+
+    input, button {
+      margin: 5px;
+      padding: 5px;
+    }
+
+    video {
+      width: 300px;
+      border: 1px solid black;
+      margin: 10px;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>Mediasoup Test Room</h2>
+  <label>User ID: <input type="text" id="userId" /></label><br />
+  <label>Room ID: <input type="text" id="roomId" /></label><br />
+  <button id="connectBtn">Connect</button>
+  <button id="startStreamBtn">Start Streaming</button>
+
+  <h3>Local Video</h3>
+  <video id="localVideo" autoplay muted playsinline></video>
+
+  <h3>Remote Video</h3>
+  <div id="remoteVideos"></div>
+
+  <script>
+    const serverUrl = 'http://localhost:5000'; // your backend address
+
+    let socket;
+    let device;
+    let localStream;
+    let sendTransport;
+    let recvTransport;
+    let consumers = [];
+    let producerMap = new Set();
+
+    async function connect() {
+      const userId = document.getElementById('userId').value.trim();
+      const roomId = document.getElementById('roomId').value.trim();
+
+      if (!userId || !roomId) {
+        alert("Please enter User ID and Room ID");
+        return;
+      }
+
+      socket = io(serverUrl, {
+        transports: ['websocket'],
+      });
+
+      socket.on('connect', async () => {
+        console.log('✅ Connected');
+
+        await new Promise((resolve) => {
+          socket.emit('join-room', { roomId, userId, teamId: 'dummy-team' }, resolve);
+        });
+
+        console.log('✅ Joined room');
+      });
+
+      socket.on('producer-list', async (producerIds) => {
+        for (const id of producerIds) {
+          if (!producerMap.has(id)) {
+            producerMap.add(id);
+            await consume(id);
+          }
+        }
+      });
+
+      socket.on('new-producer', async ({ producerId }) => {
+        if (!producerMap.has(producerId)) {
+          producerMap.add(producerId);
+          await consume(producerId);
+        }
+      });
+
+      socket.on('disconnect', () => {
+        console.warn('❌ Disconnected');
+      });
+
+      socket.on('connect_error', (err) => {
+        console.error('❗ Connect error:', err);
+      });
+    }
+
+    async function startStreaming() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        document.getElementById('localVideo').srcObject = localStream;
+
+        const roomId = document.getElementById('roomId').value.trim();
+        const routerRtpCapabilities = await new Promise((resolve) => {
+          socket.emit('get-rtp-capabilities', { roomId }, resolve);
+        });
+
+        device = new Device(); // ✅ FIXED HERE: use global Device, not mediasoupClient.Device
+        await device.load({ routerRtpCapabilities });
+
+        const sendTransportParams = await new Promise((resolve) => {
+          socket.emit('create-send-transport', resolve);
+        });
+
+        sendTransport = device.createSendTransport(sendTransportParams);
+
+        sendTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+          socket.emit('connect-send-transport', {
+            transportId: sendTransport.id,
+            dtlsParameters
+          }, callback);
+        });
+
+        sendTransport.on('produce', ({ kind, rtpParameters }, callback, errback) => {
+          socket.emit('produce', {
+            transportId: sendTransport.id,
+            kind,
+            rtpParameters
+          }, ({ producerId }) => {
+            callback({ id: producerId });
+          });
+        });
+
+        for (const track of localStream.getTracks()) {
+          await sendTransport.produce({ track });
+        }
+
+        socket.emit('get-producers');
+
+      } catch (err) {
+        console.error('❌ startStreaming error:', err);
+        alert('Streaming failed: ' + err.message);
+      }
+    }
+
+    async function consume(producerId) {
+      try {
+        if (!recvTransport) {
+          const recvTransportParams = await new Promise((resolve) => {
+            socket.emit('create-recv-transport', resolve);
+          });
+
+          recvTransport = device.createRecvTransport(recvTransportParams);
+
+          recvTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+            socket.emit('connect-recv-transport', {
+              transportId: recvTransport.id,
+              dtlsParameters
+            }, callback);
+          });
+        }
+
+        const consumerParams = await new Promise((resolve) => {
+          socket.emit('consume', {
+            producerId,
+            transportId: recvTransport.id,
+            rtpCapabilities: device.rtpCapabilities
+          }, resolve);
+        });
+
+        const consumer = await recvTransport.consume({
+          id: consumerParams.id,
+          producerId: consumerParams.producerId,
+          kind: consumerParams.kind,
+          rtpParameters: consumerParams.rtpParameters,
+        });
+
+        consumers.push(consumer);
+
+        const remoteStream = new MediaStream([consumer.track]);
+        const remoteVideo = document.createElement('video');
+        remoteVideo.autoplay = true;
+        remoteVideo.playsInline = true;
+        remoteVideo.srcObject = remoteStream;
+        document.getElementById('remoteVideos').appendChild(remoteVideo);
+
+        socket.emit('resume-consumer', { consumerId: consumer.id });
+
+      } catch (err) {
+        console.error('❌ consume error:', err);
+      }
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('connectBtn').addEventListener('click', connect);
+      document.getElementById('startStreamBtn').addEventListener('click', startStreaming);
+    });
+  </script>
+</body>
+</html>

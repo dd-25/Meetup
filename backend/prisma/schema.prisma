@@ -1,0 +1,95 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrganizationRole {
+  owner
+  admin
+  member
+}
+
+enum TeamRole {
+  leader
+  member
+}
+
+model User {
+  id                      String                   @id @default(uuid())
+  name                    String
+  email                   String                   @unique
+  password                String
+  organizationMemberships OrganizationMembership[] // Roles in orgs
+  teamMemberships         TeamMembership[]         // Participation in teams
+  roomParticipants        RoomParticipant[]
+}
+
+model Organization {
+  id          String                   @id @default(uuid())
+  name        String
+  memberships OrganizationMembership[] // Users + roles
+  teams       Team[]
+}
+
+model OrganizationMembership {
+  id             String           @id @default(uuid())
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId String
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String
+  role           OrganizationRole @default(member)
+
+  @@unique([organizationId, userId]) // Prevents duplicate entries
+}
+
+model Team {
+  id              String           @id @default(uuid())
+  name            String
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId  String
+  teamMemberships TeamMembership[]
+  rooms           Room[]
+}
+
+model TeamMembership {
+  id     String   @id @default(uuid())
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String
+  team   Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  teamId String
+  role   TeamRole @default(member)
+
+  @@unique([userId, teamId]) // Prevents re-adding same user
+}
+
+model Room {
+  id           String            @id @default(uuid())
+  name         String
+  isActive     Boolean           @default(true)
+  createdAt    DateTime          @default(now())
+  team         Team              @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  teamId       String
+  participants RoomParticipant[]
+}
+
+model RoomParticipant {
+  id     String @id @default(uuid())
+  room   Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  roomId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String
+
+  joinedAt DateTime @default(now())
+
+  @@unique([roomId, userId])
+}
