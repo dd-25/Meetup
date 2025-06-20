@@ -1,209 +1,234 @@
 import {
-  WebSocketGateway, SubscribeMessage, WebSocketServer,
-  OnGatewayConnection, OnGatewayDisconnect, MessageBody, ConnectedSocket
+  ConnectedSocket,
+  MessageBody,
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+  SubscribeMessage,
+  WebSocketGateway,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { Logger } from '@nestjs/common';
 import { MediasoupService } from '../mediasoup/mediasoup.service';
 import { RedisService } from '../redis/redis.service';
-import { ForbiddenException, Logger } from '@nestjs/common';
-import { PrismaService } from 'src/prisma/prisma.service';
-import { Prisma } from '@prisma/client';
 
-interface ClientMeta {
-  roomId: string;
-  transportIds: string[];
-}
-
-@WebSocketGateway({ cors: true })
+@WebSocketGateway({ cors: {
+  origin: '*',
+} })
 export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
-  @WebSocketServer() server: Server;
-
-  private logger = new Logger(SocketGateway.name);
+  private readonly logger = new Logger(SocketGateway.name);
+  private server: Server;
 
   constructor(
-    private readonly ms: MediasoupService,
-    private readonly rd: RedisService,
-    private readonly prisma: PrismaService,
-  ) { }
+    private readonly mediasoupService: MediasoupService,
+    private readonly redisService: RedisService,
+  ) {}
+
+  afterInit(server: Server) {
+    this.server = server;
+  }
 
   async handleConnection(client: Socket) {
     this.logger.log(`Client connected: ${client.id}`);
   }
 
   async handleDisconnect(client: Socket) {
-    const meta = await this.rd.getJson<ClientMeta>(`client:${client.id}`);
-    if (meta) {
-      await this.ms.cleanupClient(meta.roomId, meta.transportIds);
-      await this.rd.srem(`room:${meta.roomId}:producers`, client.id);
-      await this.rd.del(`client:${client.id}`);
+    this.logger.warn(`Client disconnected: ${client.id}`);
+
+    const metadata = await this.redisService.getClientMetadata(client.id);
+    if (!metadata?.roomId) return;
+
+    const { roomId } = metadata;
+
+    await this.mediasoupService.removeClient(client.id);
+    await this.redisService.removeClientFromRoom(client.id, roomId);
+
+    const remainingClients = await this.redisService.getClientsInRoom(roomId);
+    if (remainingClients.length === 0) {
+      this.logger.warn(`Room ${roomId} is now empty.`);
     }
-    this.logger.log(`Client disconnected: ${client.id}`);
   }
 
   @SubscribeMessage('join-room')
-  async joinRoom(@ConnectedSocket() client: Socket, @MessageBody() { roomId, teamId, userId }: { roomId: string, teamId: string, userId: string }) {
+  async joinRoom(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { roomId: string; userId: string; teamId: string },
+  ) {
+    const { roomId, userId, teamId } = body;
+    this.logger.log(`join-room: ${client.id} joining ${roomId} as ${userId}`);
 
-    if (!roomId || !userId || (!teamId && 0)) { // for now ignoring the teamId
-      client.emit('error', 'Missing roomId or userId');
+    // TODO: Replace with DB check
+    const userInTeam = true;
+    if (!userInTeam) {
+      client.emit('error', 'User not in team');
       return;
     }
 
-    // const membership = await this.prisma.teamMembership.findFirst({
-    //   where: {
-    //     teamId,
-    //     userId,
-    //   },
-    // });
-
-    // if (!membership) {
-    //   throw new ForbiddenException('User does not belong to the team');
-    // }
-
-    const existing = this.ms.hasRoom(roomId);
-    if (!existing) {
-      console.log(`Creating new Mediasoup room: ${roomId}`);
-      await this.ms.createRoom(roomId);
+    // Create room in Redis if not exists
+    const alreadyExists = await this.redisService.roomExists(roomId);
+    if (!alreadyExists) {
+      await this.redisService.createRoom(roomId, teamId);
+      await this.mediasoupService.createRoom(roomId);
+      this.logger.log(`Created room ${roomId} for team ${teamId}`);
+      // add room to the DB
     }
 
-    client.join(roomId);
-    const meta: ClientMeta = { roomId, transportIds: [] };
-    await this.rd.setJson(`client:${client.id}`, meta);
+    // Set client metadata
+    await this.redisService.setClientMetadata(client.id, { userId, roomId, teamId });
+    await this.redisService.addClientToRoom(roomId, client.id);
+
+    const allClients = await this.redisService.getClientsInRoom(roomId);
+    const otherClients = allClients.filter(id => id !== client.id);
+
+    for (const peerId of otherClients) {
+      this.server.to(peerId).emit('new-peer', { clientId: client.id });
+    }
 
     client.emit('joined', { roomId, clientId: client.id });
-    client.to(roomId).emit('user-joined', { userId, clientId: client.id });
+  }
 
-    const producerIds = await this.rd.smembers(`room:${roomId}:producers`);
-    if (producerIds.length > 0) {
-      client.emit('producer-list', producerIds);
+  @SubscribeMessage('get-rtp-capabilities')
+  async getRtpCapabilities(@ConnectedSocket() client: Socket) {
+    const metadata = await this.redisService.getClientMetadata(client.id);
+    if (!metadata?.roomId) {
+      return client.emit('error', 'Client not in room');
+    }
+
+    try {
+      const caps = await this.mediasoupService.getRtpCapabilities(metadata.roomId);
+      client.emit('get-rtp-capabilities', caps);
+    } catch (err) {
+      this.logger.error('get-rtp-capabilities error:', err);
+      client.emit('error', 'Room not found or mediasoup error');
     }
   }
 
   @SubscribeMessage('create-send-transport')
-  async createSend(@ConnectedSocket() client: Socket) {
-    const meta = await this.rd.getJson<ClientMeta>(`client:${client.id}`);
-    if (!meta?.roomId) {
-      return { error: 'Client metadata missing' };
+  async createSendTransport(@ConnectedSocket() client: Socket) {
+    const metadata = await this.redisService.getClientMetadata(client.id);
+    if (!metadata?.roomId) {
+      return client.emit('error', 'Client not in room');
     }
 
-    const params = await this.ms.createTransport(meta.roomId);
-    meta.transportIds.push(params.id);
-    await this.rd.setJson(`client:${client.id}`, meta);
-
-    return params;
+    const params = await this.mediasoupService.createWebRtcTransport(
+      metadata.roomId,
+      client.id,
+      'send',
+    );
+    client.emit('parameters', params);
   }
 
   @SubscribeMessage('connect-send-transport')
   async connectSendTransport(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { transportId: string; dtlsParameters: any },
+    @MessageBody() body: { transportId: string; dtlsParameters: any },
   ) {
-    const meta = await this.rd.getJson<ClientMeta>(`client:${client.id}`);
-    if (!meta?.roomId) {
-      client.emit('error', 'Client metadata missing');
-      return;
-    }
-
-    try {
-      await this.ms.connectTransport(meta.roomId, data.transportId, data.dtlsParameters);
-      client.emit('send-transport-connected');
-    } catch (err) {
-      client.emit('error', 'Failed to connect send transport');
-    }
+    await this.mediasoupService.connectTransport(client.id, body.transportId, body.dtlsParameters);
+    client.emit('send-transport-connected');
   }
 
   @SubscribeMessage('produce')
-  async produce(@ConnectedSocket() client: Socket, @MessageBody() body: any) {
-    const { transportId, kind, rtpParameters } = body || {};
-    if (!transportId || !kind || !rtpParameters) return client.emit('error', 'Missing parameters');
+  async produce(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: {
+      transportId: string;
+      kind: string;
+      rtpParameters: any;
+    },
+  ) {
+    const metadata = await this.redisService.getClientMetadata(client.id);
+    if (!metadata?.roomId) {
+      return client.emit('error', 'No room found for producer');
+    }
 
-    const meta = await this.rd.getJson<ClientMeta>(`client:${client.id}`);
-    if (!meta?.roomId) return client.emit('error', 'Client metadata missing');
+    const producerId = await this.mediasoupService.produce(
+      metadata.roomId,
+      client.id,
+      body.transportId,
+      body.kind,
+      body.rtpParameters,
+    );
 
-    const pid = await this.ms.produce(meta.roomId, transportId, kind, rtpParameters);
-    await this.rd.sadd(`room:${meta.roomId}:producers`, pid);
+    const clients = await this.redisService.getClientsInRoom(metadata.roomId);
+    for (const cid of clients) {
+      if (cid !== client.id) {
+        this.server.to(cid).emit('new-producer', { producerId });
+      }
+    }
 
-    client.emit('produced', { producerId: pid });
-    client.to(meta.roomId).emit('new-producer', { producerId: pid, clientId: client.id });
+    client.emit('produced', { producerId });
   }
 
   @SubscribeMessage('create-recv-transport')
-  async createRecv(@ConnectedSocket() client: Socket) {
-    const meta = await this.rd.getJson<ClientMeta>(`client:${client.id}`);
-    if (!meta?.roomId) return client.emit('error', 'Client metadata missing');
+  async createRecvTransport(@ConnectedSocket() client: Socket) {
+    const metadata = await this.redisService.getClientMetadata(client.id);
+    if (!metadata?.roomId) {
+      return client.emit('error', 'No room for recv transport');
+    }
 
-    const params = await this.ms.createTransport(meta.roomId);
-    meta.transportIds.push(params.id);
-    await this.rd.setJson(`client:${client.id}`, meta);
-
+    const params = await this.mediasoupService.createWebRtcTransport(
+      metadata.roomId,
+      client.id,
+      'recv',
+    );
     client.emit('recv-transport-created', params);
   }
 
   @SubscribeMessage('connect-recv-transport')
-  async connRecv(@ConnectedSocket() client: Socket, @MessageBody() body: any) {
-    const { transportId, dtlsParameters } = body || {};
-    if (!transportId || !dtlsParameters) return client.emit('error', 'Missing parameters');
-
-    const meta = await this.rd.getJson<ClientMeta>(`client:${client.id}`);
-    if (!meta?.roomId) return client.emit('error', 'Client metadata missing');
-
-    await this.ms.connectTransport(meta.roomId, transportId, dtlsParameters);
+  async connectRecvTransport(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { transportId: string; dtlsParameters: any },
+  ) {
+    await this.mediasoupService.connectTransport(client.id, body.transportId, body.dtlsParameters);
     client.emit('connected');
   }
 
   @SubscribeMessage('consume')
-  async consume(@ConnectedSocket() client: Socket, @MessageBody() body: any) {
-    const { transportId, producerId, rtpCapabilities } = body || {};
-    if (!transportId || !producerId || !rtpCapabilities) {
-      return client.emit('error', 'Missing parameters');
+  async consume(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    body: { producerId: string; rtpCapabilities: any; transportId: string },
+  ) {
+    const metadata = await this.redisService.getClientMetadata(client.id);
+    if (!metadata?.roomId) return client.emit('error', 'Client not in room');
+    try {
+      const consumerParams = await this.mediasoupService.consume(
+        metadata.roomId,
+        client.id,
+        body.producerId,
+        body.rtpCapabilities,
+      );
+      client.emit('consumed', consumerParams);
+    } catch (err) {
+      client.emit('error', `Failed to consume: ${err.message}`);
     }
-
-    const meta = await this.rd.getJson<ClientMeta>(`client:${client.id}`);
-    if (!meta?.roomId) return client.emit('error', 'Client metadata missing');
-
-    const consumer = await this.ms.consume(meta.roomId, transportId, producerId, rtpCapabilities);
-    client.emit('consumed', consumer);
   }
 
   @SubscribeMessage('get-producers')
-  async listProducers(@ConnectedSocket() client: Socket) {
-    const meta = await this.rd.getJson<ClientMeta>(`client:${client.id}`);
-    if (!meta?.roomId) return client.emit('error', 'Client metadata missing');
+  async getProducers(@ConnectedSocket() client: Socket) {
+    const metadata = await this.redisService.getClientMetadata(client.id);
+    if (!metadata?.roomId) return;
 
-    const list = await this.rd.smembers(`room:${meta.roomId}:producers`);
-    client.emit('producer-list', list);
+    const producers = await this.mediasoupService.getProducers(metadata.roomId, client.id);
+    client.emit('producer-list', producers);
   }
 
   @SubscribeMessage('leave-room')
   async leaveRoom(@ConnectedSocket() client: Socket) {
-    const meta = await this.rd.getJson<ClientMeta>(`client:${client.id}`);
-    if (!meta) return;
+    const metadata = await this.redisService.getClientMetadata(client.id);
+    if (!metadata?.roomId) return;
 
-    await this.ms.cleanupClient(meta.roomId, meta.transportIds);
-    await this.rd.srem(`room:${meta.roomId}:producers`, client.id);
-    await this.rd.del(`client:${client.id}`);
+    const { roomId } = metadata;
 
-    client.leave(meta.roomId);
-    client.to(meta.roomId).emit('user-left', { clientId: client.id });
-  }
+    await this.mediasoupService.removeClient(client.id);
+    await this.redisService.removeClientFromRoom(client.id, roomId);
 
-  @SubscribeMessage('get-rtp-capabilities')
-  async getRtpCapabilities(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() _: any,
-  ): Promise<any> {
-    const meta = await this.rd.getJson<ClientMeta>(`client:${client.id}`);
-    if (!meta?.roomId) return { error: 'Client metadata missing' };
+    const clients = await this.redisService.getClientsInRoom(roomId);
+    for (const cid of clients) {
+      this.server.to(cid).emit('peer-left', { clientId: client.id });
+    }
 
-    const router = this.ms.getRouter(meta.roomId);
-    return router.rtpCapabilities;
-  }
-
-  @SubscribeMessage('resume-consumer')
-  async resumeConsumer(@ConnectedSocket() client: Socket, @MessageBody() { consumerId }: any) {
-    const meta = await this.rd.getJson<ClientMeta>(`client:${client.id}`);
-    if (!meta?.roomId) return client.emit('error', 'Client metadata missing');
-
-    await this.ms.resumeConsumer(meta.roomId, consumerId);
-    client.emit('consumer-resumed', { consumerId });
+    if (clients.length === 0) {
+      this.logger.warn(`Room ${roomId} is now empty after client left.`);
+    }
   }
 }

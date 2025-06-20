@@ -1,39 +1,76 @@
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import Redis from 'ioredis';
 
 @Injectable()
-export class RedisService implements OnModuleInit {
-  private readonly logger = new Logger(RedisService.name);
+export class RedisService {
   private redis: Redis;
 
-  async onModuleInit() {
-    const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
-    this.redis = new Redis(url);
-    this.logger.log(`Redis connected: ${url}`);
+  onModuleInit() {
+    const redisUrl = process.env.REDIS_URL;
+
+    if (!redisUrl) {
+      throw new Error('REDIS_URL is not defined in environment variables.');
+    }
+
+    this.redis = new Redis(redisUrl);
+
+    this.redis.on('connect', () => {
+      console.log('Redis connected successfully');
+    });
+
+    this.redis.on('error', (err) => {
+      console.error('Redis connection error:', err);
+    });
   }
 
-  async setJson(key: string, val: any) {
-    await this.redis.set(key, JSON.stringify(val));
+  getClient(): Redis {
+    if (!this.redis) {
+      throw new Error('Redis client not initialized.');
+    }
+    return this.redis;
   }
 
-  async getJson<T>(key: string): Promise<T | null> {
-    const data = await this.redis.get(key);
-    return data ? JSON.parse(data) : null;
+  async setClientMetadata(clientId: string, data: { userId: string; roomId: string; teamId: string }) {
+    await this.redis.hmset(`client:${clientId}`, data as any);
   }
 
-  async del(key: string) {
-    await this.redis.del(key);
+  async getClientMetadata(clientId: string): Promise<{ userId: string; roomId: string; teamId: string }> {
+    const data = await this.redis.hgetall(`client:${clientId}`);
+    return data as any;
   }
 
-  async sadd(key: string, member: string) {
-    await this.redis.sadd(key, member);
+  async addClientToRoom(roomId: string, clientId: string) {
+    await this.redis.sadd(`room:${roomId}:clients`, clientId);
+    await this.redis.set(`room:${roomId}:updatedAt`, Date.now().toString());
   }
 
-  async srem(key: string, member: string) {
-    await this.redis.srem(key, member);
+  async removeClientFromRoom(clientId: string, roomId: string) {
+    await this.redis.srem(`room:${roomId}:clients`, clientId);
+    await this.redis.del(`client:${clientId}`);
+    await this.redis.set(`room:${roomId}:updatedAt`, Date.now().toString());
   }
 
-  async smembers(key: string): Promise<string[]> {
-    return await this.redis.smembers(key);
+  async getClientsInRoom(roomId: string): Promise<string[]> {
+    return await this.redis.smembers(`room:${roomId}:clients`);
+  }
+
+  async createRoom(roomId: string, teamId: string) {
+    await this.redis.set(`room:${roomId}:team`, teamId);
+    await this.redis.set(`room:${roomId}:updatedAt`, Date.now().toString());
+  }
+
+  async roomExists(roomId: string): Promise<boolean> {
+    return (await this.redis.exists(`room:${roomId}:team`)) === 1;
+  }
+
+  async getRoomLastUpdated(roomId: string): Promise<number> {
+    const timestamp = await this.redis.get(`room:${roomId}:updatedAt`);
+    return timestamp ? parseInt(timestamp) : 0;
+  }
+
+  async deleteRoom(roomId: string) {
+    await this.redis.del(`room:${roomId}:team`);
+    await this.redis.del(`room:${roomId}:clients`);
+    await this.redis.del(`room:${roomId}:updatedAt`);
   }
 }
