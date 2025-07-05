@@ -1,10 +1,11 @@
 import { Module } from '@nestjs/common';
 import { ChatService } from './chat.service';
 import { ChatGateway } from './chat.gateway';
-import { KafkaService } from '../kafka/kafka.service';
+import { KafkaModule } from '../kafka/kafka.module';
 
 @Module({
-    providers: [ChatService, ChatGateway, KafkaService],
+    imports: [KafkaModule],
+    providers: [ChatService, ChatGateway],
     exports: [ChatService],
 })
 export class ChatModule { }
