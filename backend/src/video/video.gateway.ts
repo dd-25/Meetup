@@ -10,6 +10,15 @@ import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
 import { MediasoupService } from '../mediasoup/mediasoup.service';
 import { RedisService } from '../redis/redis.service';
+import { 
+  ConnectTransportDto, 
+  ProduceDto, 
+  ConsumeDto, 
+  JoinRoomDto, 
+  LeaveRoomDto 
+} from '../mediasoup/dto';
+import { SocketEvents, TransportDirection, ProducerKind } from '../shared/enums';
+import { ClientMetadata } from '../shared/types';
 
 @WebSocketGateway({ cors: {
   origin: '*',
@@ -48,10 +57,10 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  @SubscribeMessage('join-room')
+  @SubscribeMessage(SocketEvents.JOIN_ROOM)
   async joinRoom(
     @ConnectedSocket() client: Socket,
-    @MessageBody() body: { roomId: string; userId: string; teamId: string },
+    @MessageBody() body: JoinRoomDto & { userId: string; teamId: string },
   ) {
     const { roomId, userId, teamId } = body;
     this.logger.log(`join-room: ${client.id} joining ${roomId} as ${userId}`);
@@ -59,7 +68,7 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // TODO: Replace with DB check
     const userInTeam = true;
     if (!userInTeam) {
-      client.emit('error', 'User not in team');
+      client.emit(SocketEvents.ERROR, 'User not in team');
       return;
     }
 
@@ -83,14 +92,14 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.server.to(peerId).emit('new-peer', { clientId: client.id });
     }
 
-    client.emit('joined', { roomId, clientId: client.id });
+    client.emit(SocketEvents.ROOM_JOINED, { roomId, clientId: client.id });
   }
 
   @SubscribeMessage('get-rtp-capabilities')
   async getRtpCapabilities(@ConnectedSocket() client: Socket) {
     const metadata = await this.redisService.getClientMetadata(client.id);
     if (!metadata?.roomId) {
-      return client.emit('error', 'Client not in room');
+      return client.emit(SocketEvents.ERROR, 'Client not in room');
     }
 
     try {
@@ -98,46 +107,42 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.emit('get-rtp-capabilities', caps);
     } catch (err) {
       this.logger.error('get-rtp-capabilities error:', err);
-      client.emit('error', 'Room not found or mediasoup error');
+      client.emit(SocketEvents.ERROR, 'Room not found or mediasoup error');
     }
   }
 
-  @SubscribeMessage('create-send-transport')
+  @SubscribeMessage(SocketEvents.CREATE_SEND_TRANSPORT)
   async createSendTransport(@ConnectedSocket() client: Socket) {
     const metadata = await this.redisService.getClientMetadata(client.id);
     if (!metadata?.roomId) {
-      return client.emit('error', 'Client not in room');
+      return client.emit(SocketEvents.ERROR, 'Client not in room');
     }
 
     const params = await this.mediasoupService.createWebRtcTransport(
       metadata.roomId,
       client.id,
-      'send',
+      TransportDirection.SEND,
     );
-    client.emit('parameters', params);
+    client.emit(SocketEvents.PARAMETERS, params);
   }
 
-  @SubscribeMessage('connect-send-transport')
+  @SubscribeMessage(SocketEvents.CONNECT_SEND_TRANSPORT)
   async connectSendTransport(
     @ConnectedSocket() client: Socket,
-    @MessageBody() body: { transportId: string; dtlsParameters: any },
+    @MessageBody() body: ConnectTransportDto,
   ) {
     await this.mediasoupService.connectTransport(client.id, body.transportId, body.dtlsParameters);
-    client.emit('send-transport-connected');
+    client.emit(SocketEvents.SEND_TRANSPORT_CONNECTED);
   }
 
-  @SubscribeMessage('produce')
+  @SubscribeMessage(SocketEvents.PRODUCE)
   async produce(
     @ConnectedSocket() client: Socket,
-    @MessageBody() body: {
-      transportId: string;
-      kind: string;
-      rtpParameters: any;
-    },
+    @MessageBody() body: ProduceDto,
   ) {
     const metadata = await this.redisService.getClientMetadata(client.id);
     if (!metadata?.roomId) {
-      return client.emit('error', 'No room found for producer');
+      return client.emit(SocketEvents.ERROR, 'No room found for producer');
     }
 
     const producerId = await this.mediasoupService.produce(
@@ -158,38 +163,37 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
     client.emit('produced', { producerId });
   }
 
-  @SubscribeMessage('create-recv-transport')
+  @SubscribeMessage(SocketEvents.CREATE_RECV_TRANSPORT)
   async createRecvTransport(@ConnectedSocket() client: Socket) {
     const metadata = await this.redisService.getClientMetadata(client.id);
     if (!metadata?.roomId) {
-      return client.emit('error', 'No room for recv transport');
+      return client.emit(SocketEvents.ERROR, 'No room for recv transport');
     }
 
     const params = await this.mediasoupService.createWebRtcTransport(
       metadata.roomId,
       client.id,
-      'recv',
+      TransportDirection.RECV,
     );
     client.emit('recv-transport-created', params);
   }
 
-  @SubscribeMessage('connect-recv-transport')
+  @SubscribeMessage(SocketEvents.CONNECT_RECV_TRANSPORT)
   async connectRecvTransport(
     @ConnectedSocket() client: Socket,
-    @MessageBody() body: { transportId: string; dtlsParameters: any },
+    @MessageBody() body: ConnectTransportDto,
   ) {
     await this.mediasoupService.connectTransport(client.id, body.transportId, body.dtlsParameters);
-    client.emit('connected');
+    client.emit(SocketEvents.RECV_TRANSPORT_CONNECTED);
   }
 
-  @SubscribeMessage('consume')
+  @SubscribeMessage(SocketEvents.CONSUME)
   async consume(
     @ConnectedSocket() client: Socket,
-    @MessageBody()
-    body: { producerId: string; rtpCapabilities: any; transportId: string },
+    @MessageBody() body: ConsumeDto,
   ) {
     const metadata = await this.redisService.getClientMetadata(client.id);
-    if (!metadata?.roomId) return client.emit('error', 'Client not in room');
+    if (!metadata?.roomId) return client.emit(SocketEvents.ERROR, 'Client not in room');
     try {
       const consumerParams = await this.mediasoupService.consume(
         metadata.roomId,
@@ -199,7 +203,7 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
       );
       client.emit('consumed', consumerParams);
     } catch (err) {
-      client.emit('error', `Failed to consume: ${err.message}`);
+      client.emit(SocketEvents.ERROR, `Failed to consume: ${err.message}`);
     }
   }
 
@@ -212,7 +216,7 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
     client.emit('producer-list', producers);
   }
 
-  @SubscribeMessage('leave-room')
+  @SubscribeMessage(SocketEvents.LEAVE_ROOM)
   async leaveRoom(@ConnectedSocket() client: Socket) {
     const metadata = await this.redisService.getClientMetadata(client.id);
     if (!metadata?.roomId) return;

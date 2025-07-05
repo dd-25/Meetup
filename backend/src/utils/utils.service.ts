@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { OrganizationRole, TeamRole } from '@prisma/client';
 
 @Injectable()
@@ -89,6 +89,20 @@ async checkUserIsTeamLeader(teamId: string, userId: string) {
     });
 
     return membership?.role ?? TeamRole.member;
+  }
+
+  async getOrganizationRoleByUser(orgId: string, userId: string): Promise<OrganizationRole> {
+    const membership = await this.prisma.organizationMembership.findUnique({
+      where: {
+        organizationId_userId: {
+          organizationId: orgId,
+          userId,
+        },
+      },
+      select: { role: true },
+    });
+
+    return membership?.role ?? OrganizationRole.member;
   }
 
 }

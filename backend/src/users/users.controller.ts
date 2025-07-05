@@ -12,12 +12,16 @@ import {
     ForbiddenException,
     BadRequestException,
     InternalServerErrorException,
+    HttpStatus,
+    HttpCode,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto, UpdateUserDto } from './dto/users.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { UtilsService } from '../utils/utils.service';
 import { OrganizationRole, TeamRole } from '@prisma/client';
+import { ERROR_MESSAGES, SUCCESS_MESSAGES } from '../shared/constants';
+import { SuccessResponseDto, ApiResponseDto } from '../shared/dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('users')
@@ -25,52 +29,58 @@ export class UsersController {
     constructor(private readonly usersService: UsersService, private readonly utilsService: UtilsService) { }
 
     @Get()
-    async searchUsers(@Query('query') query: string) {
+    async searchUsers(@Query('query') query: string): Promise<ApiResponseDto> {
         try {
-            return await this.usersService.searchUsers(query);
+            const users = await this.usersService.searchUsers(query);
+            return new SuccessResponseDto('Users retrieved successfully', users);
         } catch (error) {
-            throw new InternalServerErrorException(error.message);
+            throw new InternalServerErrorException(ERROR_MESSAGES.INTERNAL_SERVER_ERROR);
         }
     }
 
     @Get(':id')
-    async getUser(@Param('id') id: string) {
+    async getUser(@Param('id') id: string): Promise<ApiResponseDto> {
         const user = await this.usersService.getUserById(id);
-        if (!user) throw new NotFoundException('User not found');
-        return user;
+        if (!user) throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
+        return new SuccessResponseDto('User retrieved successfully', user);
     }
 
     @Patch(':id')
-    async updateUser(@Param('id') id: string, @Body() dto: UpdateUserDto) {
+    async updateUser(@Param('id') id: string, @Body() dto: UpdateUserDto): Promise<ApiResponseDto> {
         try {
-            return await this.usersService.updateUser(id, dto);
+            const updatedUser = await this.usersService.updateUser(id, dto);
+            return new SuccessResponseDto(SUCCESS_MESSAGES.USER_UPDATED, updatedUser);
         } catch (error) {
-            throw new BadRequestException(error.message);
+            throw new BadRequestException(ERROR_MESSAGES.USER_UPDATE_FAILED);
         }
     }
 
     @Delete(':id')
-    async deleteUser(@Param('id') id: string) {
+    @HttpCode(HttpStatus.NO_CONTENT)
+    async deleteUser(@Param('id') id: string): Promise<void> {
         try {
-            return await this.usersService.deleteUser(id);
+            await this.usersService.deleteUser(id);
         } catch (error) {
-            throw new InternalServerErrorException(error.message);
+            throw new InternalServerErrorException(ERROR_MESSAGES.INTERNAL_SERVER_ERROR);
         }
     }
 
     @Get('team/:teamId')
-    getUsersOfTeam(@Param('teamId') teamId: string) {
-        return this.usersService.getUsersOfTeam(teamId);
+    async getUsersOfTeam(@Param('teamId') teamId: string): Promise<ApiResponseDto> {
+        const users = await this.usersService.getUsersOfTeam(teamId);
+        return new SuccessResponseDto('Team users retrieved successfully', users);
     }
 
     @Get('org/:orgId')
-    getUsersOfOrganization(@Param('orgId') orgId: string) {
-        return this.usersService.getUsersOfOrganization(orgId);
+    async getUsersOfOrganization(@Param('orgId') orgId: string): Promise<ApiResponseDto> {
+        const users = await this.usersService.getUsersOfOrganization(orgId);
+        return new SuccessResponseDto('Organization users retrieved successfully', users);
     }
 
     @Get('room/:roomId')
-    getUsersOfRoom(@Param('roomId') roomId: string) {
-        return this.usersService.getUsersOfRoom(roomId);
+    async getUsersOfRoom(@Param('roomId') roomId: string): Promise<ApiResponseDto> {
+        const users = await this.usersService.getUsersOfRoom(roomId);
+        return new SuccessResponseDto('Room users retrieved successfully', users);
     }
 
     @Post(':orgId/add-to-organization/:userId')
@@ -79,11 +89,17 @@ export class UsersController {
         @Param('userId') userId: string,
         @Query('by') requestedBy: string,
         @Query('role') role: OrganizationRole = OrganizationRole.member,
-    ) {
+    ): Promise<ApiResponseDto> {
         const isAllowed = await this.utilsService.checkUserIsAdminOrOwner(orgId, requestedBy);
-        if (!isAllowed) throw new ForbiddenException('Only admin or owner can add users');
-        if (role === OrganizationRole.owner) throw new ForbiddenException('Cannot add owner');
-        return this.usersService.addUserToOrganization(orgId, userId, role);
+        if (!isAllowed) {
+            throw new ForbiddenException(ERROR_MESSAGES.INSUFFICIENT_ORG_PERMISSIONS);
+        }
+        if (role === OrganizationRole.owner) {
+            throw new ForbiddenException('Cannot add owner role');
+        }
+        
+        const result = await this.usersService.addUserToOrganization(orgId, userId, role);
+        return new SuccessResponseDto('User added to organization successfully', result);
     }
 
     @Delete(':orgId/remove-from-organization/:userId')
@@ -92,17 +108,23 @@ export class UsersController {
         @Param('userId') userId: string,
         @Query('by') requestedBy: string,
         @Query('role') userRole: OrganizationRole = OrganizationRole.member,
-    ) {
-
-        if (userRole === 'owner') throw new ForbiddenException('Cannot remove owner');
-        if (userRole === 'admin' && requestedBy !== 'owner') {
+    ): Promise<ApiResponseDto> {
+        if (userRole === OrganizationRole.owner) {
+            throw new ForbiddenException('Cannot remove owner');
+        }
+        
+        const requestorRole = await this.utilsService.getOrganizationRoleByUser(orgId, requestedBy);
+        
+        if (userRole === OrganizationRole.admin && requestorRole !== OrganizationRole.owner) {
             throw new ForbiddenException('Only owner can remove admin');
         }
-        if (requestedBy === 'member') {
-            throw new ForbiddenException('Members cannot remove anyone');
+        
+        if (requestorRole === OrganizationRole.member) {
+            throw new ForbiddenException(ERROR_MESSAGES.INSUFFICIENT_ORG_PERMISSIONS);
         }
 
-        return this.usersService.removeUserFromOrganization(orgId, userId);
+        await this.usersService.removeUserFromOrganization(orgId, userId);
+        return new SuccessResponseDto('User removed from organization successfully');
     }
 
     @Post(':teamId/add-to-team/:userId')

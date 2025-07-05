@@ -16,7 +16,7 @@ import { OrganizationsService } from './organizations.service';
 import { CreateOrganizationDto, UpdateOrganizationDto } from './dto/organization.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Request } from 'express';
-import { UtilsService } from 'src/utils/utils.service';
+import { UtilsService } from '../utils/utils.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('orgs')

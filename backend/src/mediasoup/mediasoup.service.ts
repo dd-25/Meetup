@@ -1,7 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as mediasoup from 'mediasoup';
-import { Worker, Router, WebRtcTransport, Producer, Consumer } from 'mediasoup/node/lib/types';
+import { 
+  Worker, 
+  Router, 
+  WebRtcTransport, 
+  Producer, 
+  Consumer,
+  DtlsParameters,
+  RtpParameters,
+  RtpCapabilities
+} from 'mediasoup/node/lib/types';
 import { RedisService } from '../redis/redis.service';
+import { TransportDirection, ProducerKind } from '../shared/enums';
 
 interface RoomData {
   router: Router;
@@ -86,7 +96,7 @@ export class MediasoupService {
     return room.router.rtpCapabilities;
   }
 
-  async createWebRtcTransport(roomId: string, clientId: string, direction: 'send' | 'recv') {
+  async createWebRtcTransport(roomId: string, clientId: string, direction: TransportDirection) {
     const room = await this.getOrCreateRoom(roomId);
     const transport = await room.router.createWebRtcTransport({
       listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }],
@@ -107,7 +117,7 @@ export class MediasoupService {
     };
   }
 
-  async connectTransport(clientId: string, transportId: string, dtlsParameters: any) {
+  async connectTransport(clientId: string, transportId: string, dtlsParameters: DtlsParameters): Promise<void> {
     for (const room of this.rooms.values()) {
       const transport = Array.from(room.transports.values()).find(t => t.id === transportId);
       if (transport) {
@@ -123,8 +133,8 @@ export class MediasoupService {
     roomId: string,
     clientId: string,
     transportId: string,
-    kind: string,
-    rtpParameters: any,
+    kind: ProducerKind,
+    rtpParameters: RtpParameters,
   ): Promise<string> {
     const room = await this.getOrCreateRoom(roomId);
     const transport = room.transports.get(`${clientId}-send`);
@@ -145,7 +155,7 @@ export class MediasoupService {
     roomId: string,
     clientId: string,
     producerId: string,
-    rtpCapabilities: any,
+    rtpCapabilities: RtpCapabilities,
   ) {
     const room = await this.getOrCreateRoom(roomId);
 

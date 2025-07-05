@@ -6,6 +6,7 @@ import { PrismaModule } from '../prisma/prisma.module';
 @Module({
   imports: [PrismaModule],
   providers: [TeamsService],
-  controllers: [TeamsController]
+  controllers: [TeamsController],
+  exports: [TeamsService],
 })
 export class TeamsModule {}
