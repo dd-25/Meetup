@@ -105,9 +105,9 @@ export class UsersService {
                     teamMemberships: {
                         include: {
                             user: {
-                                select: { 
-                                    id: true, 
-                                    name: true, 
+                                select: {
+                                    id: true,
+                                    name: true,
                                     email: true,
                                     // Add other fields you want to include, but not password
                                 },
@@ -134,9 +134,9 @@ export class UsersService {
                     memberships: {
                         include: {
                             user: {
-                                select: { 
-                                    id: true, 
-                                    name: true, 
+                                select: {
+                                    id: true,
+                                    name: true,
                                     email: true,
                                     // Add other fields you want to include, but not password
                                 },
@@ -163,9 +163,9 @@ export class UsersService {
                     participants: {
                         include: {
                             user: {
-                                select: { 
-                                    id: true, 
-                                    name: true, 
+                                select: {
+                                    id: true,
+                                    name: true,
                                     email: true,
                                     // Add other fields you want to include, but not password
                                 },
@@ -232,36 +232,36 @@ export class UsersService {
 
     async updateOrganizationRole(orgId: string, userId: string, role: OrganizationRole) {
         const membership = await this.prisma.organizationMembership.findUnique({
-          where: {
-            organizationId_userId: { organizationId: orgId, userId },
-          },
+            where: {
+                organizationId_userId: { organizationId: orgId, userId },
+            },
         });
-      
+
         if (!membership) throw new NotFoundException('User not part of organization');
-      
+
         return this.prisma.organizationMembership.update({
-          where: {
-            organizationId_userId: { organizationId: orgId, userId },
-          },
-          data: { role },
+            where: {
+                organizationId_userId: { organizationId: orgId, userId },
+            },
+            data: { role },
         });
-      }
-      
-      async updateTeamRole(teamId: string, userId: string, role: TeamRole) {
+    }
+
+    async updateTeamRole(teamId: string, userId: string, role: TeamRole) {
         const membership = await this.prisma.teamMembership.findUnique({
-          where: {
-            userId_teamId: { userId, teamId },
-          },
+            where: {
+                userId_teamId: { userId, teamId },
+            },
         });
-      
+
         if (!membership) throw new NotFoundException('User not part of team');
-      
+
         return this.prisma.teamMembership.update({
-          where: {
-            userId_teamId: { userId, teamId },
-          },
-          data: { role },
+            where: {
+                userId_teamId: { userId, teamId },
+            },
+            data: { role },
         });
-      }
-      
+    }
+
 }

@@ -14,6 +14,8 @@ import { MediasoupService } from './mediasoup/mediasoup.service';
 import { RedisService } from './redis/redis.service';
 import { RedisModule } from './redis/redis.module';
 import { MediasoupModule } from './mediasoup/mediasoup.module';
+import { KafkaModule } from './kafka/kafka.module';
+import { ChatModule } from './chat/chat.module';
 
 @Module({
   controllers: [AppController],
@@ -32,6 +34,8 @@ import { MediasoupModule } from './mediasoup/mediasoup.module';
     SocketModule,
     RedisModule,
     MediasoupModule,
+    KafkaModule,
+    ChatModule,
   ],
 })
 export class AppModule {}

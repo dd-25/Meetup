@@ -32,6 +32,7 @@ model User {
   organizationMemberships OrganizationMembership[] // Roles in orgs
   teamMemberships         TeamMembership[]         // Participation in teams
   roomParticipants        RoomParticipant[]
+  chats                   Chat[]
 }
 
 model Organization {
@@ -59,6 +60,7 @@ model Team {
   organizationId  String
   teamMemberships TeamMembership[]
   rooms           Room[]
+  chats           Chat[]
 }
 
 model TeamMembership {
@@ -92,4 +94,19 @@ model RoomParticipant {
   joinedAt DateTime @default(now())
 
   @@unique([roomId, userId])
+}
+
+model Chat {
+  id        String   @id @default(uuid())
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  teamId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  content   String
+  url       String?
+  mediaType String   @default("text/plain")
+
+  createdAt DateTime @default(now())
+
+  @@index([teamId, createdAt, id]) // supports keyset pagination per team
 }

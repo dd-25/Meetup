@@ -17,7 +17,8 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:chat": "ts-node test-chat-architecture.ts"
   },
   "dependencies": {
     "@nestjs/class-validator": "^0.13.4",
@@ -35,6 +36,7 @@
     "class-validator": "^0.14.2",
     "ioredis": "^5.6.1",
     "jsonwebtoken": "^9.0.2",
+    "kafkajs": "^2.2.4",
     "mediasoup": "^3.16.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
@@ -42,6 +44,7 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
     "uuid": "^11.1.0"
   },
   "devDependencies": {
@@ -56,6 +59,8 @@
     "@types/jest": "^29.5.14",
     "@types/node": "^22.10.7",
     "@types/supertest": "^6.0.2",
+    "@types/uuid": "^10.0.0",
+    "@types/bcrypt": "^5.0.2",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.2.2",
